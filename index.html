@@ -239,7 +239,9 @@
       for(let x=-(scroll%40); x<BASE_W+40; x+=40){ ctx.moveTo(x, BASE_H-GROUND_H+8); ctx.lineTo(x+24, BASE_H-6); }
       ctx.stroke();
     }
-    function drawBird(){
+   const birdImg = new Image();
+birdImg.src = 'bird.png';
+
       // trail
       for(let i=0;i<bird.trail.length;i++){
         const t=bird.trail[i], a=i/bird.trail.length; ctx.globalAlpha=a*0.6;
