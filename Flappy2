@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Flappy — Mobile</title>
+
+  <!-- iPhone-friendly meta -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+  <style>
+    :root{
+      --bg: #0f172a; --panel:#0b1220cc; --text:#e5e7eb; --muted:#94a3b8;
+      --accent:#22d3ee; --accent2:#a78bfa; --pipe:#10b981; --pipe2:#059669;
+    }
+    * { box-sizing: border-box; }
+    html, body { height:100%; }
+    /* prevent rubber-band & Safari pull-to-refresh in game area */
+    html, body { overscroll-behavior: none; background: var(--bg); color:var(--text); }
+    body {
+      margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      display:grid; place-items:center;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right)
+               env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+
+    .wrap { width:min(94vw, 760px); }
+    .bar { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:8px 0; }
+    .btn {
+      -webkit-tap-highlight-color: transparent;
+      appearance:none; border:1px solid #334155; background:#0b1220; color:var(--text);
+      padding:10px 14px; border-radius:12px; font-weight:600;
+    }
+    .btn:active { transform: translateY(1px); }
+
+    .tiny { font-size:12px; color:var(--muted); }
+    .stage { position:relative; border-radius:16px; overflow:hidden; border:1px solid #1f2937; }
+    canvas { display:block; width:100%; height:auto; background:#0b1020; touch-action: none; }
+
+    .hud {
+      position:absolute; top:10px; left:10px; display:flex; gap:8px; align-items:center;
+      background:#0b1220cc; border:1px solid #1f2937; padding:6px 10px; border-radius:12px;
+    }
+    .overlay { position:absolute; inset:0; display:grid; place-items:center; pointer-events:none; }
+    .panel {
+      pointer-events:auto;
+      background: var(--panel); border:1px solid #1f2937; padding:18px 22px; border-radius:16px;
+      text-align:center; backdrop-filter: blur(8px);
+    }
+    .panel h2 { margin:0 0 6px; font-size:22px; }
+    .kbd { display:inline-grid; place-items:center; min-width:28px; padding:2px 8px;
+      border-radius:8px; border:1px solid #334155; background:#0b1220; color:#cbd5e1; font-weight:700; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="bar">
+      <div class="tiny">Tap screen to flap · P to pause</div>
+      <div>
+        <button class="btn" id="startBtn">Start</button>
+        <button class="btn" id="pauseBtn">Pause</button>
+        <button class="btn" id="resetBtn">Reset</button>
+      </div>
+    </div>
+
+    <div class="stage">
+      <canvas id="game" width="420" height="700" aria-label="Flappy game canvas"></canvas>
+      <div class="hud" aria-live="polite">
+        <div>Score: <strong id="score">0</strong></div>
+        <div>Best: <strong id="best">0</strong></div>
+      </div>
+      <div class="overlay" id="overlay">
+        <div class="panel" id="panel">
+          <h2>Ready?</h2>
+          <p>Tap anywhere or press <span class="kbd">Space</span> to start.</p>
+          <p class="tiny">Fly through gaps. Don’t hit pipes or the ground.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  ;(() => {
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d', { alpha: false }); // faster on iOS
+    const overlay = document.getElementById('overlay');
+    const panel   = document.getElementById('panel');
+    const scoreEl = document.getElementById('score');
+    const bestEl  = document.getElementById('best');
+    const startBtn= document.getElementById('startBtn');
+    const pauseBtn= document.getElementById('pauseBtn');
+    const resetBtn= document.getElementById('resetBtn');
+
+    // --- Device pixel ratio scaling (crisp on Retina) ---
+    const BASE_W=420, BASE_H=700;
+    const scale = {x:1,y:1};
+    const fitDPR = () => {
+      const dpr = Math.min(2, window.devicePixelRatio || 1); // cap to keep perf smooth on iPhone
+      const w = canvas.clientWidth;
+      const h = Math.round(w * (BASE_H/BASE_W));
+      canvas.style.height = h + 'px';
+      canvas.width  = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      scale.x = canvas.width / BASE_W;
+      scale.y = canvas.height / BASE_H;
+      ctx.setTransform(scale.x, 0, 0, scale.y, 0, 0);
+    };
+    new ResizeObserver(fitDPR).observe(canvas);
+    fitDPR();
+
+    // --- Game constants (base units) ---
+    const STATE = { READY:'ready', PLAY:'play', PAUSE:'pause', OVER:'over' };
+    let state = STATE.READY;
+    const G = 0.36, FLAP = -7.2, PIPE_GAP_INIT = 150, PIPE_W = 70, SPEED = 2.6, GROUND_H = 100;
+    let pipeGap = PIPE_GAP_INIT;
+
+    // --- Score ---
+    let score=0, best=Number(localStorage.getItem('flappy_best')||0);
+    bestEl.textContent = best;
+
+    // --- Bird ---
+    const bird = { x:110, y:BASE_H/2, r:16, vy:0, rot:0, alive:true, trail:[] };
+
+    // --- Pipes ---
+    const pipes=[]; let lastPipe=0; const PIPE_MS=1400;
+
+    // --- Helpers ---
+    const rand = (a,b)=>Math.random()*(b-a)+a;
+    const showOverlay=(t,s1,s2)=>{
+      panel.querySelector('h2').textContent=t;
+      panel.querySelectorAll('p')[0].innerHTML=s1||'';
+      const p2=panel.querySelectorAll('p')[1]; if(p2) p2.innerHTML=s2||'';
+      overlay.style.display='grid';
+    };
+    const hideOverlay=()=>overlay.style.display='none';
+
+    // Prevent iOS double-tap zoom & page scroll while playing
+    const stopTouch = e => { if (state===STATE.PLAY) e.preventDefault(); };
+    canvas.addEventListener('touchstart', stopTouch, {passive:false});
+    canvas.addEventListener('touchmove',  stopTouch, {passive:false});
+    // Also use pointer events for universal tap
+    const flap = ()=>{
+      if(state===STATE.READY){ start(); return; }
+      if(state===STATE.OVER){ reset(); start(); return; }
+      if(state===STATE.PAUSE) return;
+      bird.vy = FLAP;
+    };
+    canvas.addEventListener('pointerdown', flap);
+    window.addEventListener('keydown', e=>{
+      if(e.code==='Space'||e.code==='ArrowUp'){ e.preventDefault(); flap(); }
+      if(e.key && e.key.toLowerCase()==='p') togglePause();
+    });
+
+    startBtn.onclick = flap;
+    pauseBtn.onclick = ()=>togglePause();
+    resetBtn.onclick = ()=>{ reset(); showReady(); };
+
+    document.addEventListener('visibilitychange', ()=>{
+      if(document.hidden && state===STATE.PLAY){ togglePause(true); }
+    });
+
+    function togglePause(silent){
+      if(state===STATE.PLAY){ state=STATE.PAUSE; if(!silent) showOverlay('Paused','Press <span class="kbd">P</span> to resume.'); }
+      else if(state===STATE.PAUSE){ state=STATE.PLAY; hideOverlay(); requestAnimationFrame(loop); }
+    }
+
+    function showReady(){ state=STATE.READY; showOverlay('Ready?','Tap anywhere or press <span class="kbd">Space</span>.','Fly through gaps.'); draw(); }
+    function start(){ if(state===STATE.PLAY) return; state=STATE.PLAY; hideOverlay(); lastPipe=performance.now(); requestAnimationFrame(loop); }
+    function gameOver(){
+      state=STATE.OVER; bird.alive=false;
+      best=Math.max(best,score); localStorage.setItem('flappy_best', best); bestEl.textContent=best;
+      showOverlay('Game Over', `Score: <strong>${score}</strong>`, 'Tap to restart.');
+    }
+    function reset(){
+      score=0; scoreEl.textContent='0';
+      bird.x=110; bird.y=BASE_H/2; bird.vy=0; bird.rot=0; bird.alive=true; bird.trail.length=0;
+      pipes.length=0; lastPipe=0; pipeGap=PIPE_GAP_INIT;
+    }
+
+    function spawnPipe(){
+      const gapY = Math.floor(rand(120, BASE_H - GROUND_H - 120));
+      pipes.push({ x: BASE_W + 20, top: gapY - pipeGap/2, bottom: gapY + pipeGap/2, passed:false });
+    }
+
+    function update(){
+      // bird physics
+      bird.vy += G; bird.y += bird.vy; bird.rot = Math.atan2(bird.vy, 10);
+      bird.trail.push({x: bird.x - 12, y: bird.y}); if(bird.trail.length>10) bird.trail.shift();
+
+      // bounds
+      if(bird.y + bird.r > BASE_H - GROUND_H){ bird.y = BASE_H - GROUND_H - bird.r; return gameOver(); }
+      if(bird.y - bird.r < 0){ bird.y = bird.r; bird.vy=0; }
+
+      // pipes
+      for(const p of pipes) p.x -= SPEED;
+      while(pipes.length && pipes[0].x + PIPE_W < -60) pipes.shift();
+
+      if(performance.now()-lastPipe > PIPE_MS){ spawnPipe(); lastPipe = performance.now(); }
+
+      for(const p of pipes){
+        const inX = bird.x + bird.r > p.x && bird.x - bird.r < p.x + PIPE_W;
+        const hit = (bird.y - bird.r < p.top) || (bird.y + bird.r > p.bottom);
+        if(inX && hit) return gameOver();
+        if(!p.passed && p.x + PIPE_W < bird.x - bird.r){
+          p.passed = true; score++; scoreEl.textContent = score;
+          if(score % 5 === 0) pipeGap = Math.max(110, pipeGap - 6); // gently harder
+        }
+      }
+    }
+
+    function drawBG(){
+      const g = ctx.createLinearGradient(0,0,0,BASE_H);
+      g.addColorStop(0,'#0ea5e9'); g.addColorStop(1,'#0b1020');
+      ctx.fillStyle=g; ctx.fillRect(0,0,BASE_W,BASE_H);
+
+      // simple stars
+      ctx.globalAlpha=0.25;
+      for(let i=0;i<50;i++){
+        const x=(i*73)%BASE_W, y=(i*i*19)%(BASE_H-GROUND_H-40);
+        ctx.fillStyle = i%2? '#e5e7eb':'#a78bfa'; ctx.fillRect(x,y,2,2);
+      }
+      ctx.globalAlpha=1;
+    }
+    function roundRect(c,x,y,w,h,r){ c.beginPath(); c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r); c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath(); }
+    function drawPipes(){
+      for(const p of pipes){
+        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--pipe').trim() || '#10b981';
+        roundRect(ctx, p.x, 0, PIPE_W, p.top, 10); ctx.fill();
+        roundRect(ctx, p.x, p.bottom, PIPE_W, BASE_H - GROUND_H - p.bottom, 10); ctx.fill();
+        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--pipe2').trim() || '#059669';
+        ctx.fillRect(p.x-2, p.top-16, PIPE_W+4, 16);
+        ctx.fillRect(p.x-2, p.bottom, PIPE_W+4, 16);
+      }
+    }
+    function drawGround(scroll){
+      ctx.fillStyle='#111827'; ctx.fillRect(0, BASE_H-GROUND_H, BASE_W, GROUND_H);
+      ctx.strokeStyle='#1f2937'; ctx.lineWidth=2; ctx.beginPath();
+      for(let x=-(scroll%40); x<BASE_W+40; x+=40){ ctx.moveTo(x, BASE_H-GROUND_H+8); ctx.lineTo(x+24, BASE_H-6); }
+      ctx.stroke();
+    }
+    function drawBird(){
+      // trail
+      for(let i=0;i<bird.trail.length;i++){
+        const t=bird.trail[i], a=i/bird.trail.length; ctx.globalAlpha=a*0.6;
+        const r=bird.r*(0.5+a*0.5);
+        const g=ctx.createLinearGradient(t.x-r,t.y-r,t.x+r,t.y+r);
+        g.addColorStop(0,'#22d3ee'); g.addColorStop(1,'#a78bfa');
+        ctx.fillStyle=g; ctx.beginPath(); ctx.arc(t.x,t.y,r,0,Math.PI*2); ctx.fill();
+      }
+      ctx.globalAlpha=1;
+
+      ctx.save(); ctx.translate(bird.x,bird.y); ctx.rotate(bird.rot*0.4);
+      const r=bird.r;
+      let g=ctx.createLinearGradient(-r,-r,r,r); g.addColorStop(0,'#22d3ee'); g.addColorStop(1,'#a78bfa');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(r*0.3,-r*0.2,r*0.38,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#0f172a'; ctx.beginPath(); ctx.arc(r*0.5,-r*0.2,r*0.18,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#f59e0b'; ctx.beginPath(); ctx.moveTo(r*0.8,0); ctx.lineTo(r*1.5,-r*0.1); ctx.lineTo(r*0.9,r*0.3); ctx.closePath(); ctx.fill();
+      ctx.fillStyle='#0ea5e9'; ctx.beginPath(); ctx.ellipse(-r*0.2,r*0.2,r*0.7,r*0.4,-0.6,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+
+    let prev=performance.now(), scroll=0;
+    function loop(now){
+      if(state!==STATE.PLAY) return;
+      const dt = Math.min(32, now-prev); prev=now;
+      update(dt);
+      ctx.clearRect(0,0,BASE_W,BASE_H);
+      drawBG(); drawPipes(); drawGround(scroll); drawBird();
+      scroll += SPEED;
+      requestAnimationFrame(loop);
+    }
+
+    // start screen
+    showReady();
+  })();
+  </script>
+</body>
+</html>
