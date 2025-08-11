@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Flappy — Custom Bird</title>
+  <title>Flappy — Custom Bird + Scrolling Letters</title>
 
   <!-- iPhone-friendly meta -->
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
@@ -127,6 +127,13 @@
     // --- Pipes ---
     const pipes=[]; let lastPipe=0;
 
+    // --- Scrolling letters along the ground ---
+    const LETTERS_PATTERN = " GGOTRYANFA";            // leading space adds spacing
+    let textScrollX = 0;                               // updated each frame
+    const TEXT_SPEED = SPEED * 1.1;                    // tune scroll speed
+    const TEXT_COLOR = "#93c5fd";                      // light blue
+    const TEXT_SHADOW = "rgba(15,23,42,0.65)";         // subtle shadow
+
     // --- Helpers ---
     const rand=(a,b)=>Math.random()*(b-a)+a;
     const showOverlay=(t,s1,s2)=>{
@@ -175,6 +182,7 @@
       score=0; scoreEl.textContent='0';
       bird.x=110; bird.y=BASE_H/2; bird.vy=0; bird.rot=0; bird.alive=true; bird.trail.length=0;
       pipes.length=0; lastPipe=0; pipeGap=PIPE_GAP_INIT;
+      textScrollX = 0;
     }
 
     function spawnPipe(){
@@ -205,6 +213,10 @@
           if(score % 5 === 0) pipeGap = Math.max(110, pipeGap - 6); // gently harder
         }
       }
+
+      // advance the ground letters
+      textScrollX -= TEXT_SPEED;
+      if (textScrollX < -1000) textScrollX = 0; // prevent numbers from growing forever
     }
 
     function drawBG(){
@@ -230,14 +242,49 @@
         ctx.fillRect(p.x-2, p.bottom,  PIPE_W+4, 16);
       }
     }
+
+    // Draw ground + diagonal texture + scrolling letters
     function drawGround(scroll){
+      // ground block
       ctx.fillStyle='#111827'; ctx.fillRect(0, BASE_H-GROUND_H, BASE_W, GROUND_H);
+
+      // light diagonal texture
       ctx.strokeStyle='#1f2937'; ctx.lineWidth=2; ctx.beginPath();
       for(let x=-(scroll%40); x<BASE_W+40; x+=40){ ctx.moveTo(x, BASE_H-GROUND_H+8); ctx.lineTo(x+24, BASE_H-6); }
       ctx.stroke();
+
+      // --- scrolling letters inside ground area ---
+      const regionX = 0, regionY = BASE_H - GROUND_H, regionW = BASE_W, regionH = GROUND_H;
+      ctx.save();
+      // Clip to the ground so letters don't spill out
+      ctx.beginPath(); ctx.rect(regionX, regionY, regionW, regionH); ctx.clip();
+
+      // style
+      const fontPx = 26; // base font size in canvas base units
+      ctx.font = `700 ${fontPx}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+      ctx.fillStyle = TEXT_COLOR;
+      ctx.textBaseline = 'middle';
+      ctx.shadowColor = TEXT_SHADOW;
+      ctx.shadowBlur = 6;
+
+      // measure a single chunk to tile seamlessly
+      const chunk = LETTERS_PATTERN + LETTERS_PATTERN; // little more spacing
+      const chunkW = ctx.measureText(chunk).width;
+
+      // y position centered within ground
+      const textY = regionY + regionH * 0.58;
+
+      // draw enough chunks to cover width
+      let startX = (textScrollX % chunkW);
+      if (startX > 0) startX -= chunkW; // ensure it begins off-screen to the left
+      for (let x = startX; x < regionW + chunkW; x += chunkW) {
+        ctx.fillText(chunk, x, textY);
+      }
+
+      ctx.restore();
     }
 
-    // --- Draw the custom image bird (with trail fallback if image isn't ready) ---
+    // --- Draw the custom image bird (with trail while image loads) ---
     function drawBird(){
       // trail (kept for fun)
       for(let i=0;i<bird.trail.length;i++){
@@ -255,13 +302,11 @@
       ctx.rotate(bird.rot*0.4);
 
       if (birdReady){
-        // Scale image to a nice size relative to the original bird radius
         const baseW = bird.r * 3;                             // tweak 2.5–3.5 to resize
         const ratio = birdImg.naturalHeight / birdImg.naturalWidth || 1;
         const w = baseW, h = baseW * ratio;
         ctx.drawImage(birdImg, -w/2, -h/2, w, h);
       } else {
-        // Fallback circle while image loads
         ctx.fillStyle='#22d3ee'; ctx.beginPath(); ctx.arc(0,0,bird.r,0,Math.PI*2); ctx.fill();
       }
 
@@ -284,6 +329,7 @@
 
     function showReady(){ state=STATE.READY; showOverlay('Ready?','Tap anywhere or press <span class="kbd">Space</span>.','Fly through gaps.'); draw(); }
     function draw(){ ctx.clearRect(0,0,BASE_W,BASE_H); drawBG(); drawPipes(); drawGround(0); drawBird(); }
+
   })();
   </script>
 </body>
